@@ -4,9 +4,9 @@ import (
     "log"
     "os"
     "os/signal"
-    "runtime"
     "syscall"
     "time"
+    "strings" 
 
     "github.com/bwmarrin/discordgo"
     "github.com/gordonklaus/portaudio"
@@ -17,11 +17,42 @@ var (
     commandPrefix    = "gl."
     botToken         = os.Getenv("GOLIVE_BOT_TOKEN")
     outputDeviceName = os.Getenv("ERMETE_OUTPUT_DEVICE")
+    inputDeviceName = os.Getenv("ERMETE_INPUT_DEVICE")
     ownerList        []string
     shutdownChan     = make(chan struct{})
     inputDevice      ErmeteInput  = &PortAudioInput{}
     outputDevice     ErmeteOutput = &PortAudioOutput{}
 )
+
+var commandHandlers = map[string]func(*discordgo.Session, *discordgo.MessageCreate){
+    "join":    handleJoinCommand,
+    "leave":   handleLeaveCommand,
+    "shutdown": handleShutdownCommand,
+}
+
+type ErmeteInput interface {
+    Start(vc *discordgo.VoiceConnection) error
+    Stop() error
+}
+
+type ErmeteOutput interface {
+    Start(vc *discordgo.VoiceConnection) error
+    Stop() error
+}
+
+type PortAudioInput struct {
+    stream      *portaudio.Stream
+    vc          *discordgo.VoiceConnection
+    opusEncoder *opus.Encoder
+    audioChan   chan []float32 // Buffered channel for audio data
+}
+
+type PortAudioOutput struct {
+    stream      *portaudio.Stream
+    vc          *discordgo.VoiceConnection
+    opusDecoder *opus.Decoder
+    audioChan   chan []float32 // Channel to pass audio data
+}
 
 func main() {
     err := portaudio.Initialize()
@@ -96,24 +127,9 @@ func main() {
     }
 }
 
-type ErmeteInput interface {
-    Start(vc *discordgo.VoiceConnection) error
-    Stop() error
-}
-
-type ErmeteOutput interface {
-    Start(vc *discordgo.VoiceConnection) error
-    Stop() error
-}
-
-type PortAudioInput struct {
-    stream      *portaudio.Stream
-    vc          *discordgo.VoiceConnection
-    opusEncoder *opus.Encoder
-}
-
 func (pi *PortAudioInput) Start(vc *discordgo.VoiceConnection) error {
     pi.vc = vc
+    pi.audioChan = make(chan []float32, 20) // Buffered channel for audio frames
 
     var err error
     pi.opusEncoder, err = opus.NewEncoder(48000, 2, opus.AppAudio)
@@ -145,6 +161,9 @@ func (pi *PortAudioInput) Start(vc *discordgo.VoiceConnection) error {
         return err
     }
 
+    // Start a goroutine to consume from the channel and send to OpusSend
+    go pi.processAudio()
+
     return nil
 }
 
@@ -152,35 +171,44 @@ func (pi *PortAudioInput) callback(in []float32, out []float32) {
     buffer := make([]float32, len(in))
     copy(buffer, in)
 
-    encoded := make([]byte, 4096) // Assure encoded is of type []byte with sufficient size
-
-    n, err := pi.opusEncoder.EncodeFloat32(buffer, encoded)
-    if err != nil {
-        log.Println("Error encoding audio:", err)
-        return
+    select {
+    case pi.audioChan <- buffer:
+        // Successfully added to buffer
+    default:
+        log.Println("Audio buffer is full, dropping frame")
     }
-
-    // Add a small delay
-    time.Sleep(10 * time.Millisecond)
-
-    pi.vc.OpusSend <- encoded[:n] // Use only the filled part of encoded
 }
+
+func (pi *PortAudioInput) processAudio() {
+    for frame := range pi.audioChan {
+        encoded := make([]byte, 4096)
+
+        n, err := pi.opusEncoder.EncodeFloat32(frame, encoded)
+        if err != nil {
+            log.Println("Error encoding audio:", err)
+            continue
+        }
+
+        select {
+        case pi.vc.OpusSend <- encoded[:n]: // Send encoded data
+        default:
+            log.Println("OpusSend channel is full, dropping frame")
+        }
+    }
+}
+
 
 func (pi *PortAudioInput) Stop() error {
     if pi.stream != nil {
+        close(pi.audioChan) // Close the audio channel
         return pi.stream.Close()
     }
     return nil
 }
 
-type PortAudioOutput struct {
-    stream      *portaudio.Stream
-    opusDecoder *opus.Decoder
-    vc          *discordgo.VoiceConnection
-}
 
 func (po *PortAudioOutput) Start(vc *discordgo.VoiceConnection) error {
-    po.vc = vc
+    po.vc = vc // Assign the voice connection
 
     var err error
     po.opusDecoder, err = opus.NewDecoder(48000, 2)
@@ -188,71 +216,58 @@ func (po *PortAudioOutput) Start(vc *discordgo.VoiceConnection) error {
         return err
     }
 
-    outputDevice, err := portaudio.OpenDefaultStream(0, 2, 44100, 0, po.callback)
+    po.audioChan = make(chan []float32, 10) // Create buffered channel
+
+    outputDevice, err := portaudio.OpenDefaultStream(0, 2, 44100, 0, po.callback) // Provide the callback
     if err != nil {
         return err
     }
-
     po.stream = outputDevice
 
     err = po.stream.Start()
     if err != nil {
         return err
     }
-
     go po.receiveAudio(vc)
 
     return nil
 }
 
 func (po *PortAudioOutput) receiveAudio(vc *discordgo.VoiceConnection) {
-    for {
-        select {
-        case pkt, ok := <-vc.OpusRecv:
-            if !ok {
-                return
-            }
+    for pkt := range vc.OpusRecv {
+        opusData := pkt.Opus
+        decoded := make([]int16, 4096)
 
-            log.Println("Received audio packet from Discord") // Log for debugging
-
-            opusData := pkt.Opus
-
-            decoded := make([]int16, 4096)
-            n, err := po.opusDecoder.Decode(opusData, decoded)
-            if err != nil {
-                log.Println("Error decoding audio:", err)
-                continue
-            }
-
-            output := make([]float32, n)
-            for i := 0; i < n; i++ {
-                output[i] = float32(decoded[i]) / 32767.0
-            }
-
-            // Write the decoded data to the output stream
-            err = po.stream.Write()
-            if err != nil {
-                log.Println("Error writing to stream:", err)
-                return
-            }
-
-            log.Println("Audio data written to stream") // Log for debugging
+        n, err := po.opusDecoder.Decode(opusData, decoded)
+        if err != nil {
+            log.Printf("Decode error: %v", err)
+            continue
         }
+// Enable this Log for debugging
+//           log.Println("Received audio packet from Discord") 
+            
+        floatData := make([]float32, n)
+        for i := 0; i < n; i++ {
+            floatData[i] = float32(decoded[i]) / 32767.0
+        }
+        
+	select {
+		case po.audioChan <- floatData:
+   		 // Successfully queued audio
+		default:
+    		log.Println("Audio channel full, dropping frame")
+	}
     }
 }
 
 func (po *PortAudioOutput) callback(out []float32) {
-    if po.vc == nil {
-        return
-    }
-
-    buffer := make([]float32, len(out))
-    copy(out, buffer)
-
-    if time.Now().Second()%10 == 0 {
-        var memStats runtime.MemStats
-        runtime.ReadMemStats(&memStats)
-        log.Printf("Memory usage: Alloc=%v, TotalAlloc=%v, Sys=%v, NumGC=%v", memStats.Alloc, memStats.TotalAlloc, memStats.Sys, memStats.NumGC)
+    select {
+    case data := <-po.audioChan:
+        copy(out, data)
+    default:
+        for i := range out {
+            out[i] = 0 // Fill with silence
+        }
     }
 }
 
@@ -317,20 +332,20 @@ func onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
         return
     }
 
-    log.Printf("Received message: %s", m.Content)
+    if !strings.HasPrefix(m.Content, commandPrefix) {
+        return
+    }
 
-    switch {
-    case m.Content == commandPrefix+"leave":
-        log.Println("Leave command detected")
-        handleLeaveCommand(s, m)
-    case m.Content == commandPrefix+"shutdown":
-        log.Println("Shutdown command detected")
-        handleShutdownCommand(s, m)
-    case len(m.Content) > len(commandPrefix+"join "):
-        log.Println("Join command detected")
-        handleJoinCommand(s, m)
-    default:
-        log.Println("No matching command found.")
+    command := strings.TrimPrefix(m.Content, commandPrefix)
+    args := strings.Fields(command)
+    if len(args) == 0 {
+        return
+    }
+
+    if handler, exists := commandHandlers[args[0]]; exists {
+        handler(s, m)
+    } else {
+        log.Println("Unknown command:", args[0])
     }
 }
 
@@ -392,3 +407,4 @@ func onVoiceStateUpdate(s *discordgo.Session, v *discordgo.VoiceStateUpdate) {
         }
     }
 }
+
