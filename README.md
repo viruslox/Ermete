@@ -22,11 +22,18 @@ This bot scope is live audio streaming.
 - ERMETE_INPUT_DEVICE: Input device name (e.g., microphone)
 - ERMETE_OUTPUT_DEVICE: Output device name (e.g., speakers)
 
-### Installation
-- Clone the repository:
-git clone https://github.com/yourusername/ermete.git
+### Installation (Compile)
+- (ONLY this step as root) install required libraries
+apt install portaudio19-dev libopus-dev libopusfile-dev opus-tools
+
+- Prepare folder
+mkdir -p ~/go/src/Ermete && cd ~/go/src/Ermete/
+
+- Download the source:
+wget https://github.com/viruslox/Ermete/blob/main/Ermete.go
 
 - Install dependencies:
+go mod init
 go mod tidy
 
 - Build the bot:
@@ -34,8 +41,14 @@ go build -o ermete
 
 - Run the bot: 
 Create a launch script where to set Env viarables (check the launch_ermete.sh template for hints)
+wget https://github.com/viruslox/Ermete/blob/main/launch_ermete.sh
+#### Edit the script!
 ./launch_ermete.sh
 
+### Installation
+- Download last release from https://github.com/viruslox/Ermete/releases/
+- Copy it somewhere like ~/Ermete/
+- Create a launch script where to set Env viarables (check the launch_ermete.sh template for hints)
 
 ## 🛠 Usage (Discord commands)
 
