@@ -42,10 +42,11 @@ go build -o ermete
 - Run the bot: 
 Create a launch script where to set Env viarables (check the launch_ermete.sh template for hints)
 wget https://github.com/viruslox/Ermete/blob/main/launch_ermete.sh
-#### Edit the script!
+
+- Edit the script before use it
 ./launch_ermete.sh
 
-### Installation
+### Installation (Binary download)
 - Download last release from https://github.com/viruslox/Ermete/releases/
 - Copy it somewhere like ~/Ermete/
 - Create a launch script where to set Env viarables (check the launch_ermete.sh template for hints)
