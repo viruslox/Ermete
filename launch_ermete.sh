@@ -7,7 +7,7 @@ export GOLIVE_BOT_TOKEN="<discord token"
 
 ## pulseaudio settings -> these have to match your device names
 export ERMETE_INPUT_DEVICE="Virtual.Ermete.sink.monitor"
-export ERMETE_OUTPUT_DEVICE="Virtual.Ermete.out"
+export ERMETE_OUTPUT_DEVICE="Virtual.Ermete.out.playback"
 
 # Run the Go program
 echo "Starting the Go bot..."
