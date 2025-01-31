@@ -6,7 +6,8 @@ import (
     "os/signal"
     "syscall"
     "time"
-    "strings" 
+    "strings"
+    "math"
 
     "github.com/bwmarrin/discordgo"
     "github.com/gordonklaus/portaudio"
@@ -85,45 +86,67 @@ func main() {
 
     select {
     case <-shutdown:
-        log.Println("Received shutdown signal, closing bot...")
+        log.Println("Received OS shutdown signal (Ctrl+C).")
+    case <-shutdownChan:
+        log.Println("Received Discord shutdown command.")
+    }
 
-        timeout := time.After(5 * time.Second)
+    // *** Shutdown Logic Moved Here ***
+    log.Println("Starting bot shutdown...")
 
-        stopErr := make(chan error, 2)
-        go func() {
-            if err := inputDevice.Stop(); err != nil {
-                stopErr <- err
-            } else {
-                stopErr <- nil
-            }
-        }()
-        go func() {
-            if err := outputDevice.Stop(); err != nil {
-                stopErr <- err
-            } else {
-                stopErr <- nil
-            }
-        }()
+    timeout := time.After(5 * time.Second)
+    stopErr := make(chan error, 2)
 
-        select {
-        case err := <-stopErr:
-            if err != nil {
-                log.Printf("Error stopping devices: %v", err)
-            }
-        case <-timeout:
-            log.Println("Timeout reached during cleanup, force shutting down...")
+    go func() {
+        if err := inputDevice.Stop(); err != nil {
+            stopErr <- err
+        } else {
+            stopErr <- nil
         }
+    }()
+    go func() {
+        if err := outputDevice.Stop(); err != nil {
+            stopErr <- err
+        } else {
+            stopErr <- nil
+        }
+    }()
 
-        for _, vc := range dg.VoiceConnections {
-            if vc != nil {
-                if err := vc.Disconnect(); err != nil {
-                    log.Printf("Error disconnecting from voice channel: %v", err)
-                }
+    select {
+    case err := <-stopErr:
+        if err != nil {
+            log.Printf("Error stopping devices: %v", err)
+        }
+    case <-timeout:
+        log.Println("Timeout reached during device cleanup, force shutting down...")
+    }
+
+    for _, vc := range dg.VoiceConnections {
+        if vc != nil {
+            if err := vc.Disconnect(); err != nil {
+                log.Printf("Error disconnecting from voice channel: %v", err)
             }
         }
+    }
 
-        time.Sleep(2 * time.Second)
-        log.Println("Bot shutdown complete.")
+    time.Sleep(2 * time.Second)
+    log.Println("Bot shutdown complete.")
+}
+
+func normalize(data []float32) {
+    maxValue := float32(0)
+    for _, val := range data {
+        absVal := float32(math.Abs(float64(val)))
+        if absVal > maxValue {
+            maxValue = absVal
+        }
+    }
+
+    if maxValue > 0 { // Avoid division by zero
+        scaleFactor := 1.0 / maxValue
+        for i := range data {
+            data[i] *= scaleFactor
+        }
     }
 }
 
@@ -266,6 +289,7 @@ func (po *PortAudioOutput) callback(out []float32) {
 
 func (po *PortAudioOutput) Stop() error {
     if po.stream != nil {
+        close(po.audioChan)
         return po.stream.Close()
     }
     return nil
