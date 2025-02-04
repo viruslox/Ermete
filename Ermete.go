@@ -7,7 +7,6 @@ import (
     "syscall"
     "time"
     "strings"
-    "math"
 
     "github.com/bwmarrin/discordgo"
     "github.com/gordonklaus/portaudio"
@@ -17,8 +16,6 @@ import (
 var (
     commandPrefix    = "gl."
     botToken         = os.Getenv("GOLIVE_BOT_TOKEN")
-    outputDeviceName = os.Getenv("ERMETE_OUTPUT_DEVICE")
-    inputDeviceName = os.Getenv("ERMETE_INPUT_DEVICE")
     ownerList        []string
     shutdownChan     = make(chan struct{})
     inputDevice      ErmeteInput  = &PortAudioInput{}
@@ -61,6 +58,14 @@ func main() {
         log.Fatalf("PortAudio initialization failed: %v", err)
     }
     defer portaudio.Terminate()
+	
+	devices, err := portaudio.Devices()
+	if err != nil {
+    	log.Fatal("Error listing PortAudio devices:", err)
+	}
+	for i, device := range devices {
+   	 log.Printf("Device %d: Name: %s, Input Channels: %d, Output Channels: %d", i, device.Name, device.MaxInputChannels, device.MaxOutputChannels)
+	}
 
     dg, err := discordgo.New("Bot " + botToken)
     if err != nil {
@@ -133,23 +138,6 @@ func main() {
     log.Println("Bot shutdown complete.")
 }
 
-func normalize(data []float32) {
-    maxValue := float32(0)
-    for _, val := range data {
-        absVal := float32(math.Abs(float64(val)))
-        if absVal > maxValue {
-            maxValue = absVal
-        }
-    }
-
-    if maxValue > 0 { // Avoid division by zero
-        scaleFactor := 1.0 / maxValue
-        for i := range data {
-            data[i] *= scaleFactor
-        }
-    }
-}
-
 func (pi *PortAudioInput) Start(vc *discordgo.VoiceConnection) error {
     pi.vc = vc
     pi.audioChan = make(chan []float32, 100)
@@ -158,7 +146,7 @@ func (pi *PortAudioInput) Start(vc *discordgo.VoiceConnection) error {
     if err != nil {
         return err
     }
-    pi.opusEncoder.SetBitrate(128000)
+    pi.opusEncoder.SetBitrate(96000)
     inputDevice, err := portaudio.DefaultInputDevice()
     if err != nil {
         return err
@@ -200,7 +188,7 @@ func (pi *PortAudioInput) callback(in []float32, out []float32) {
 
 func (pi *PortAudioInput) processAudio() {
     for frame := range pi.audioChan {
-        encoded := make([]byte, 4096)
+        encoded := make([]byte, 2048)
 
         n, err := pi.opusEncoder.EncodeFloat32(frame, encoded)
         if err != nil {
@@ -236,7 +224,7 @@ func (po *PortAudioOutput) Start(vc *discordgo.VoiceConnection) error {
         return err
     }
     po.audioChan = make(chan []float32, 100) // Create buffered channel
-    outputDevice, err := portaudio.OpenDefaultStream(0, 2, 48000, 0, po.callback) // Provide the callback
+    outputDevice, err := portaudio.OpenDefaultStream(0, 2, 48000, 960, po.callback) // Provide the callback
     if err != nil {
         return err
     }
@@ -252,39 +240,61 @@ func (po *PortAudioOutput) Start(vc *discordgo.VoiceConnection) error {
 }
 
 func (po *PortAudioOutput) receiveAudio(vc *discordgo.VoiceConnection) {
-    for pkt := range vc.OpusRecv {
-        opusData := pkt.Opus
-        decoded := make([]int16, 4096)
-
-        n, err := po.opusDecoder.Decode(opusData, decoded)
-        if err != nil {
-            log.Printf("Decode error: %v", err)
-            continue
-        }
-// Enable this Log for debugging
-//           log.Println("Received audio packet from Discord") 
-            
-        floatData := make([]float32, n)
-        for i := 0; i < n; i++ {
-            floatData[i] = float32(decoded[i]) / float32(32767)
-        }
+    for {
         select {
-        case po.audioChan <- floatData:
-        default:
-            log.Println("Audio channel full, dropping frame")
+        case pkt, ok := <-vc.OpusRecv:
+            if !ok {
+                log.Println("OpusRecv channel closed")
+                return
+            }
+
+            opusData := pkt.Opus
+            log.Printf("Received Opus packet length: %d", len(opusData))
+
+            // Create a decoder buffer that matches the packet size
+            decoded := make([]int16, len(opusData))
+
+            n, err := po.opusDecoder.Decode(opusData, decoded)
+            if err != nil {
+                log.Printf("Decode error: %v, skipping frame", err)
+                continue
+            }
+
+            // Convert to float32 for output
+            floatData := make([]float32, n)
+            for i := 0; i < n; i++ {
+                floatData[i] = float32(decoded[i]) / 32767.0 // Ensure correct range
+            }
+
+            select {
+            case po.audioChan <- floatData:
+            default:
+                log.Println("Audio channel full, dropping frame")
+            }
+        case <-shutdownChan:
+            log.Println("Shutting down audio receiver")
+            return
         }
     }
 }
 
+
 func (po *PortAudioOutput) callback(out []float32) {
-    select {
-    case data := <-po.audioChan:
-        copy(out, data)
-    default:
-        for i := range out {
-            out[i] = 0 // Fill with silence
-        }
-    }
+	select {
+	case data := <-po.audioChan:
+		if len(data) == len(out) {
+			copy(out, data)
+		} else {
+			log.Printf("Warning: Mismatched data length. Expected %d, got %d", len(out), len(data))
+			for i := range out {
+				out[i] = 0 // Fill with silence
+			}
+		}
+	default:
+		for i := range out {
+			out[i] = 0 // Fill with silence
+		}
+	}
 }
 
 func (po *PortAudioOutput) Stop() error {
@@ -295,22 +305,11 @@ func (po *PortAudioOutput) Stop() error {
     return nil
 }
 
-
 func init() {
     commandPrefix = os.Getenv("GOLIVE_BOT_PREFIX")
     botToken = os.Getenv("GOLIVE_BOT_TOKEN")
     if botToken == "" {
         log.Fatal("Bot token not set. Please set GOLIVE_BOT_TOKEN environment variable.")
-    }
-
-    inputDeviceName := os.Getenv("ERMETE_INPUT_DEVICE")
-    if inputDeviceName == "" {
-        log.Fatal("Input device not set. Please set ERMETE_INPUT_DEVICE environment variable.")
-    }
-
-    outputDeviceName = os.Getenv("ERMETE_OUTPUT_DEVICE")
-    if outputDeviceName == "" {
-        log.Fatal("Output device not set. Please set ERMETE_OUTPUT_DEVICE environment variable.")
     }
 }
 
@@ -401,6 +400,16 @@ func handleLeaveCommand(s *discordgo.Session, m *discordgo.MessageCreate) {
     if !exists || vc == nil {
         log.Println("Bot is not connected to a voice channel.")
         return
+    }
+
+    log.Println("Stopping audio processing before leaving the voice channel.")
+
+    // Stop the input/output processing before leaving
+    if err := inputDevice.Stop(); err != nil {
+        log.Printf("Error stopping input device: %v", err)
+    }
+    if err := outputDevice.Stop(); err != nil {
+        log.Printf("Error stopping output device: %v", err)
     }
 
     log.Println("Bot is leaving the voice channel.")
