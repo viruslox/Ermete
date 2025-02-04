@@ -19,8 +19,6 @@ This bot scope is live audio streaming.
 
 ### Environment variables:
 - GOLIVE_BOT_TOKEN: Your bot's token
-- ERMETE_INPUT_DEVICE: Input device name (e.g., microphone)
-- ERMETE_OUTPUT_DEVICE: Output device name (e.g., speakers)
 
 ### Installation (Compile)
 - (ONLY this step as root) install required libraries
