@@ -22,20 +22,21 @@ This bot scope is live audio streaming.
 
 ### Installation (Compile)
 - (ONLY this step as root) install required libraries
-apt install portaudio19-dev libopus-dev libopusfile-dev opus-tools
+apt install git portaudio19-dev libopus-dev libopusfile-dev opus-tools
 
 - Prepare folder
-mkdir -p ~/go/src/Ermete && cd ~/go/src/Ermete/
+mkdir -p ~/go/src/ && cd ~/go/src/
 
 - Download the source:
-wget https://github.com/viruslox/Ermete/blob/main/Ermete.go
+git clone https://github.com/viruslox/Ermete
 
 - Install dependencies:
+cd ~/go/src/Ermete/
 go mod init
 go mod tidy
 
 - Build the bot:
-go build -o ermete
+go build ./cmd/Ermete
 
 - Run the bot: 
 Create a launch script where to set Env viarables (check the launch_ermete.sh template for hints)
