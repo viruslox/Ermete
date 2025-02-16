@@ -31,9 +31,11 @@ mkdir -p ~/go/src/ && cd ~/go/src/
 git clone https://github.com/viruslox/Ermete
 
 - Install dependencies
-- 	cd ~/go/src/Ermete/
-- 	go mod init
-- 	go mod tidy
+```
+cd ~/go/src/Ermete/
+go mod init
+go mod tidy
+```
 
 - Build the bot:
 go build ./cmd/Ermete
