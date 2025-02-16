@@ -1,8 +1,8 @@
 #!/bin/bash
-#### this is just an example, depending on the use case, You might need to find Your XDG runtime folder and Xauthority
+#### this is just an example, You might add XDG runtime folder and Xauthority path
 
 ## Choose the discord command prefix, copy here Your discord bot token
-export GOLIVE_BOT_PREFIX="gl."
+export GOLIVE_BOT_PREFIX="ermete."
 export GOLIVE_BOT_TOKEN="<discord token"
 
 # Run the Go program
