@@ -114,9 +114,13 @@ func handleJoinCommand(s *discordgo.Session, m *discordgo.MessageCreate, b *Bot)
                 log.Printf("Error starting input device: %v", err)
                 return
         }
-        if err := audio.StartOutput(vc, b.ShutdownChan); err != nil {
-                log.Printf("Error starting output device: %v", err)
-                return
+        if config.EnableOutput == "yes" { // Check the configuration flag
+                if err := audio.StartOutput(vc, b.ShutdownChan); err != nil {
+                        log.Printf("Error starting output device: %v", err)
+                        return
+                }
+        } else {
+                log.Println("Audio output is disabled.")
         }
 }
 
@@ -132,8 +136,12 @@ func handleLeaveCommand(s *discordgo.Session, m *discordgo.MessageCreate, b *Bot
         if err := audio.StopInput(); err != nil {
                 log.Printf("Error stopping input device: %v", err)
         }
-        if err := audio.StopOutput(); err != nil {
-                log.Printf("Error stopping output device: %v", err)
+        if config.EnableOutput == "yes" { // Check the configuration flag
+        	if err := audio.StopOutput(); err != nil {
+        	log.Printf("Error stopping output device: %v", err)
+        	}
+        } else {
+        	log.Println("Audio output is disabled, skipping stop.")
         }
 
         log.Println("Bot is leaving the voice channel.")
