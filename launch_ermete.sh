@@ -4,6 +4,7 @@
 ## Choose the discord command prefix, copy here Your discord bot token
 export GOLIVE_BOT_PREFIX="ermete."
 export GOLIVE_BOT_TOKEN="<discord token"
+export ENABLE_AUDIO_OUTPUT="NO" # yes or NO
 
 # Run the Go program
 echo "Starting the Go bot..."
