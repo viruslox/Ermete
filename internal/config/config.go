@@ -6,8 +6,9 @@ import (
 )
 
 var (
-        CommandPrefix string
-        BotToken      string
+        CommandPrefix	string
+        BotToken	string
+        EnableOutput	string // yes or NO
 )
 
 func LoadConfig() {
@@ -19,5 +20,10 @@ func LoadConfig() {
         BotToken = os.Getenv("GOLIVE_BOT_TOKEN")
         if BotToken == "" {
                 log.Fatal("Bot token not set. Please set GOLIVE_BOT_TOKEN environment variable.")
+        }
+        
+        EnableOutput = os.Getenv("ENABLE_AUDIO_OUTPUT")
+        if EnableOutput == "" {
+                EnableOutput = "NO"
         }
 }
