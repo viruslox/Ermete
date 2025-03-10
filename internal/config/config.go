@@ -6,9 +6,9 @@ import (
 )
 
 var (
-        CommandPrefix	string
-        BotToken	string
-        EnableOutput	string // yes or NO
+        CommandPrefix string
+        BotToken      string
+        EnableOutput  string // yes or NO
 )
 
 func LoadConfig() {
