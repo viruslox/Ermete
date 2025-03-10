@@ -1,7 +1,6 @@
 package audio
 
 import (
-	"fmt"
 	"log"
 	"math"
 
@@ -15,6 +14,7 @@ type PortAudioOutput struct {
 	vc          *discordgo.VoiceConnection
 	opusDecoder *opus.Decoder
 	audioChan   chan []float32
+	shutdown    chan struct{}
 }
 
 var outputDevice *PortAudioOutput
@@ -31,47 +31,32 @@ func StopOutput() error {
 	return nil
 }
 
-// Helper function to get default output stream parameters
-func DefaultOutputStreamParameters(device *portaudio.DeviceInfo, channels, sampleRate int) (portaudio.StreamParameters, error) {
-	if device == nil {
-		return portaudio.StreamParameters{}, fmt.Errorf("portaudio: invalid device")
-	}
-	if device.MaxOutputChannels < channels {
-		return portaudio.StreamParameters{}, fmt.Errorf("portaudio: invalid channel count")
+func (po *PortAudioOutput) receiveAudio(vc *discordgo.VoiceConnection, shutdownChan <-chan struct{}) error {
+	var err error
+	po.vc = vc
+	po.opusDecoder, err = opus.NewDecoder(48000, 1)
+	if err != nil {
+		return err
 	}
 
-	return portaudio.StreamParameters{
+	po.audioChan = make(chan []float32, 20) // Small buffer to prevent real-time dropouts
+	po.shutdown = make(chan struct{})
+
+	device, err := portaudio.DefaultOutputDevice()
+	if err != nil {
+		return err
+	}
+
+	params := portaudio.StreamParameters{
 		Output: portaudio.StreamDeviceParameters{
 			Device:   device,
-			Channels: channels,
+			Channels: 1,
 		},
-		SampleRate:    float64(sampleRate),
-		FramesPerBuffer: 960, // Fixed size
-	}, nil
-}
-
-func (po *PortAudioOutput) receiveAudio(vc *discordgo.VoiceConnection, shutdownChan <-chan struct{}) error {
-	po.vc = vc
-
-	var err error
-	po.opusDecoder, err = opus.NewDecoder(48000, 1) // Discor audio is Mono!
-	if err != nil {
-		return err
+		SampleRate:      48000,
+		FramesPerBuffer: 960,
 	}
 
-	po.audioChan = make(chan []float32, 100) // Adjusted buffer size
-
-	outputDevice, err := portaudio.DefaultOutputDevice()
-	if err != nil {
-		return err
-	}
-
-	outputParams, err := DefaultOutputStreamParameters(outputDevice, 1, 48000) // 1 channel (mono)
-	if err != nil {
-		return err
-	}
-
-	po.stream, err = portaudio.OpenStream(outputParams, po.callback)
+	po.stream, err = portaudio.OpenStream(params, po.callback)
 	if err != nil {
 		return err
 	}
@@ -80,25 +65,25 @@ func (po *PortAudioOutput) receiveAudio(vc *discordgo.VoiceConnection, shutdownC
 		return err
 	}
 
-	go po.processIncomingAudio(vc, shutdownChan)
-
+	go po.processIncomingAudio(shutdownChan)
 	return nil
 }
 
-func (po *PortAudioOutput) processIncomingAudio(vc *discordgo.VoiceConnection, shutdownChan <-chan struct{}) {
-	decoded := make([]int16, 960) // Reuse buffer
+func (po *PortAudioOutput) processIncomingAudio(shutdownChan <-chan struct{}) {
+	defer log.Println("AudioOut processing stopped")
+	decoded := make([]int16, 960)
 
 	for {
 		select {
-		case pkt, ok := <-vc.OpusRecv:
+		case pkt, ok := <-po.vc.OpusRecv:
 			if !ok {
-				log.Println("OpusRecv channel closed")
+				log.Println("AudioOut: OpusRecv channel closed")
 				return
 			}
 
 			n, err := po.opusDecoder.Decode(pkt.Opus, decoded)
 			if err != nil {
-				log.Println("Opus decode error, skipping frame")
+				log.Println("AudioOut: Dropping corrupted Opus packet")
 				continue
 			}
 
@@ -110,11 +95,14 @@ func (po *PortAudioOutput) processIncomingAudio(vc *discordgo.VoiceConnection, s
 			select {
 			case po.audioChan <- floatData:
 			default:
-				log.Println("Audio channel full, dropping frame")
+				log.Println("AudioOut: Audio buffer full, dropping frame")
 			}
 
 		case <-shutdownChan:
-			log.Println("Shutting down audio receiver")
+			log.Println("AudioOut: Shutting down receiver")
+			return
+		case <-po.shutdown:
+			log.Println("AudioOut: Manual shutdown triggered")
 			return
 		}
 	}
@@ -123,10 +111,10 @@ func (po *PortAudioOutput) processIncomingAudio(vc *discordgo.VoiceConnection, s
 func (po *PortAudioOutput) callback(out []float32) {
 	select {
 	case data := <-po.audioChan:
-		po.applyCompression(data, out) // Directly modify `out`
+		po.applyCompression(data, out)
 	default:
 		for i := range out {
-			out[i] = 0
+			out[i] = 0 // Prevent audio glitches by sending silence
 		}
 	}
 }
@@ -150,8 +138,12 @@ func (po *PortAudioOutput) applyCompression(data []float32, out []float32) {
 
 func (po *PortAudioOutput) Stop() error {
 	if po.stream != nil {
+		close(po.shutdown)
 		close(po.audioChan)
-		return po.stream.Close()
+		if err := po.stream.Close(); err != nil {
+			return err
+		}
+		po.stream = nil
 	}
 	return nil
 }
